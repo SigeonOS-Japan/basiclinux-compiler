@@ -1,123 +1,40 @@
-name: Compile Linux Kernel & Build ISO
+name: Build BasicLinux ISO
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
-    inputs:
-      kernel_branch:
-        description: 'Kernel branch, tag, or commit to build'
-        required: true
-        default: 'master'
 
 jobs:
-  build-custom-linux:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+
     steps:
-      - name: Install Build Dependencies
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            libncurses-dev \
-            bison \
-            flex \
-            libssl-dev \
-            libelf-dev \
-            bc \
-            rsync \
-            git \
-            cpio \
-            xorriso \
-            syslinux \
-            syslinux-common \
-            isolinux \
-            dosfstools
+            build-essential bc bison flex libssl-dev libelf-dev \
+            libncurses-dev cpio xz-utils \
+            grub-pc-bin grub-common xorriso mtools
 
-      - name: Clone Linux Kernel Source
-        run: |
-          echo "Cloning torvalds/linux..."
-          git clone --depth 1 --branch ${{ inputs.kernel_branch || 'master' }} https://github.com/torvalds/linux.git kernel-src
-          cd kernel-src
-          git rev-parse HEAD
+      - name: Cache downloaded sources
+        uses: actions/cache@v4
+        with:
+          path: src/*.tar.*
+          key: sources-${{ hashFiles('build.sh') }}
 
-      - name: Configure Kernel
-        run: |
-          cd kernel-src
-          make defconfig
+      - name: Build
+        run: bash build.sh
 
-      - name: Compile Kernel
-        run: |
-          cd kernel-src
-          make -j$(nproc) bzImage
-          make -j$(nproc) modules
-
-      - name: Create ISO Workspace & Initramfs
-        run: |
-          mkdir -p /tmp/iso-root/boot/syslinux
-          cp kernel-src/arch/x86/boot/bzImage /tmp/iso-root/boot/vmlinuz
-
-          mkdir -p /tmp/initramfs/{bin,sbin,etc,proc,sys,dev}
-          cd /tmp/initramfs
-          
-          # Download static busybox for initramfs
-          curl -L https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox -o bin/busybox
-          chmod +x bin/busybox
-
-          # Create init script
-          cat << 'EOF' > init
-          #!/bin/sh
-          mount -t proc none /proc
-          mount -t sysfs none /sys
-          mount -t devtmpfs none /dev
-          clear
-          echo "=========================================="
-          echo "Successfully booted custom Linux Kernel!"
-          echo "Kernel Version:"
-          uname -r
-          echo "=========================================="
-          exec /bin/sh
-          EOF
-          chmod +x init
-
-          find . -print0 | cpio --null -ov --format=newc | gzip -9 > /tmp/iso-root/boot/initrd.img
-      - name: Setup Bootloader (Syslinux)
-        run: |
-          cat << 'EOF' > /tmp/iso-root/boot/syslinux/syslinux.cfg
-          DEFAULT customlinux
-          TIMEOUT 10
-          PROMPT 1
-
-          LABEL customlinux
-              KERNEL /boot/vmlinuz
-              APPEND initrd=/boot/initrd.img panic=10
-          EOF
-
-          # Use correct case-insensitive or fallback paths for isolinux.bin
-          cp /usr/lib/ISOLINUX/isolinux.bin /tmp/iso-root/boot/syslinux/ || cp /usr/lib/syslinux/isolinux.bin /tmp/iso-root/boot/syslinux/
-          
-          # Copy ldlinux.c32 module
-          cp /usr/lib/i386-linux-gnu/syslinux/modules/bios/ldlinux.c32 /tmp/iso-root/boot/syslinux/ || cp /usr/lib/syslinux/modules/bios/ldlinux.c32 /tmp/iso-root/boot/syslinux/ || true
-          LABEL customlinux
-              KERNEL /boot/vmlinuz
-              APPEND initrd=/boot/initrd.img panic=10
-          EOF
-
-          cp /usr/lib/SYSLINUX/isolinux.bin /tmp/iso-root/boot/syslinux/
-          cp /usr/lib/i386-linux-gnu/syslinux/modules/bios/ldlinux.c32 /tmp/iso-root/boot/syslinux/ || cp /usr/lib/syslinux/modules/bios/ldlinux.c32 /tmp/iso-root/boot/syslinux/ || true
-
-      - name: Generate Final Bootable ISO
-        run: |
-          xorriso -as mkisofs \
-            -o /tmp/custom-torvalds-linux.iso \
-            -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-            -c boot/syslinux/boot.cat \
-            -b boot/syslinux/isolinux.bin \
-            -no-emul-boot -boot-load-size 4 -boot-info-table \
-            /tmp/iso-root
-
-          ls -lh /tmp/custom-torvalds-linux.iso
-
-      - name: Upload ISO Artifact
+      - name: Upload ISO
         uses: actions/upload-artifact@v4
         with:
-          name: torvalds-linux-iso
-          path: /tmp/custom-torvalds-linux
+          name: BasicLinux-iso
+          path: out/BasicLinux.iso
+          if-no-files-found: error
