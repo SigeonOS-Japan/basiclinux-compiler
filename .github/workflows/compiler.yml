@@ -79,7 +79,6 @@ jobs:
           chmod +x init
 
           find . -print0 | cpio --null -ov --format=newc | gzip -9 > /tmp/iso-root/boot/initrd.img
-
       - name: Setup Bootloader (Syslinux)
         run: |
           cat << 'EOF' > /tmp/iso-root/boot/syslinux/syslinux.cfg
@@ -87,6 +86,16 @@ jobs:
           TIMEOUT 10
           PROMPT 1
 
+          LABEL customlinux
+              KERNEL /boot/vmlinuz
+              APPEND initrd=/boot/initrd.img panic=10
+          EOF
+
+          # Use correct case-insensitive or fallback paths for isolinux.bin
+          cp /usr/lib/ISOLINUX/isolinux.bin /tmp/iso-root/boot/syslinux/ || cp /usr/lib/syslinux/isolinux.bin /tmp/iso-root/boot/syslinux/
+          
+          # Copy ldlinux.c32 module
+          cp /usr/lib/i386-linux-gnu/syslinux/modules/bios/ldlinux.c32 /tmp/iso-root/boot/syslinux/ || cp /usr/lib/syslinux/modules/bios/ldlinux.c32 /tmp/iso-root/boot/syslinux/ || true
           LABEL customlinux
               KERNEL /boot/vmlinuz
               APPEND initrd=/boot/initrd.img panic=10
