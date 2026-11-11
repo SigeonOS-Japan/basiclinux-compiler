@@ -1,10 +1,14 @@
-name: Build BasicLinux ISO
+name: BasicLinux-Compiler
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
   workflow_dispatch:
+
+env:
+  KERNEL_VERSION: "6.6.60"
+  BUSYBOX_VERSION: "1.36.1"
 
 jobs:
   build:
@@ -12,29 +16,89 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Debug
-        run: |
-          pwd
-          ls -la
-
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev libelf-dev \
-            libncurses-dev cpio xz-utils \
+            libncurses-dev cpio xz-utils curl \
             grub-pc-bin grub-common xorriso mtools
 
       - name: Cache downloaded sources
         uses: actions/cache@v4
         with:
           path: src/*.tar.*
-          key: sources-${{ hashFiles('build.sh') }}
+          key: sources-${{ env.KERNEL_VERSION }}-${{ env.BUSYBOX_VERSION }}
 
-      - name: Build
-        run: bash build.sh
+      - name: Build BasicLinux ISO
+        run: |
+          set -euo pipefail
+
+          ROOT="$(pwd)"
+          SRC="$ROOT/src"
+          OUT="$ROOT/out"
+          ROOTFS="$ROOT/rootfs"
+          ISODIR="$ROOT/isodir"
+          JOBS="$(nproc)"
+
+          mkdir -p "$SRC" "$OUT"
+          rm -rf "$ROOTFS" "$ISODIR"
+
+          # ---------- 1. Download sources ----------
+          KERNEL_TAR="linux-$KERNEL_VERSION.tar.xz"
+          BUSYBOX_TAR="busybox-$BUSYBOX_VERSION.tar.bz2"
+
+          [ -f "$SRC/$KERNEL_TAR" ] || curl -fL -o "$SRC/$KERNEL_TAR" \
+            "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_VERSION%%.*}.x/$KERNEL_TAR"
+          [ -f "$SRC/$BUSYBOX_TAR" ] || curl -fL -o "$SRC/$BUSYBOX_TAR" \
+            "https://busybox.net/downloads/$BUSYBOX_TAR"
+
+          # ---------- 2. Build the kernel ----------
+          [ -d "$SRC/linux-$KERNEL_VERSION" ] || tar -xf "$SRC/$KERNEL_TAR" -C "$SRC"
+          make -C "$SRC/linux-$KERNEL_VERSION" defconfig
+          make -C "$SRC/linux-$KERNEL_VERSION" -j"$JOBS" bzImage
+          cp "$SRC/linux-$KERNEL_VERSION/arch/x86/boot/bzImage" "$OUT/vmlinuz"
+
+          # ---------- 3. Build a static BusyBox ----------
+          [ -d "$SRC/busybox-$BUSYBOX_VERSION" ] || tar -xf "$SRC/$BUSYBOX_TAR" -C "$SRC"
+          BB="$SRC/busybox-$BUSYBOX_VERSION"
+          make -C "$BB" defconfig
+          sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' "$BB/.config"
+          sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' "$BB/.config"
+          make -C "$BB" -j"$JOBS"
+          make -C "$BB" CONFIG_PREFIX="$ROOTFS" install
+
+          # ---------- 4. Assemble the initramfs ----------
+          mkdir -p "$ROOTFS"/{proc,sys,dev,etc,tmp,root}
+          cat > "$ROOTFS/init" <<'EOF'
+          #!/bin/sh
+          mount -t proc none /proc
+          mount -t sysfs none /sys
+          mount -t devtmpfs none /dev
+          echo
+          echo "Welcome to BasicLinux!"
+          echo
+          exec setsid cttyhack /bin/sh
+          EOF
+          chmod +x "$ROOTFS/init"
+
+          (cd "$ROOTFS" && find . -print0 | cpio --null -o -H newc 2>/dev/null | gzip -9) > "$OUT/initramfs.cpio.gz"
+
+          # ---------- 5. Build the ISO ----------
+          mkdir -p "$ISODIR/boot/grub"
+          cp "$OUT/vmlinuz" "$ISODIR/boot/vmlinuz"
+          cp "$OUT/initramfs.cpio.gz" "$ISODIR/boot/initramfs.cpio.gz"
+          cat > "$ISODIR/boot/grub/grub.cfg" <<'EOF'
+          set timeout=3
+          set default=0
+          menuentry "BasicLinux" {
+              linux /boot/vmlinuz console=tty0 console=ttyS0
+              initrd /boot/initramfs.cpio.gz
+          }
+          EOF
+
+          grub-mkrescue -o "$OUT/BasicLinux.iso" "$ISODIR"
+          ls -lh "$OUT/BasicLinux.iso"
 
       - name: Upload ISO
         uses: actions/upload-artifact@v4
