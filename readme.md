@@ -3,3 +3,5 @@ A simple tool that uses GitHub Actions to compile the linux and make a pure linu
 This uses Linux 6.6.60, BusyBox.  
 ## How to run?
 Go "Actions" in top tab, and search for "Run workflow" and press/click "Run workflow".
+## Pre-compiled artifacts
+https://limewire.com/d/2m8i8#mpAwIUbc46
